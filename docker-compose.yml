@@ -1,0 +1,16 @@
+# One-command PostgreSQL for local dev: `docker compose up -d`
+services:
+  database:
+    image: postgres:16
+    container_name: payment-ledger
+    environment:
+      - POSTGRES_DB=payment_db
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=payments
+    ports:
+      - "5432:5432"
+    volumes:
+      - payment_ledger_data:/var/lib/postgresql/data
+
+volumes:
+  payment_ledger_data:
