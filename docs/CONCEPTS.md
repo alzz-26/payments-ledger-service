@@ -53,11 +53,42 @@ What I learned while building this project, one milestone at a time. Rows marked
 | `Instant` ↔ `TIMESTAMPTZ` | A UTC point in time in both Java and Postgres | Follows from the UTC decision |
 | DB constraints | `UNIQUE(owner, currency)`, foreign keys, `CHECK (amount <> 0)`, `NOT NULL` | The database is the last line of defence; constraints catch bugs that application code misses |
 | Index | Speeds up lookups such as `WHERE account_id = ?` | Balances are queried per account all the time |
+| Package by feature | Everything for one feature (`ledger/`) lives in one package, not split into `entities/`, `repositories/`… | One place to understand a feature; add subfolders only past ~10–15 files |
+| Domain concept vs role | **Concept** = a real-world business thing that exists without software (`Account`, `LedgerEntry`, `Transfer`), named after the thing. **Role** = a job a class does in the software for a concept, named thing + job suffix (`AccountRepository` stores it, `AccountController` handles HTTP, `LedgerService` holds the business logic, `DepositRequest` / `AccountResponse` are the API input and output shapes) | No `AccountEntity`: don't name the core concept after its storage mechanism. Test: would an accountant use the word? Analogy: a hospital *patient* (concept) vs *receptionist, nurse, billing clerk* (roles) |
+| Entity ≠ API response | `Account` mirrors the DB table; `AccountResponse` is the contract with API clients | Returning entities directly means a DB change breaks the API and can leak internal fields. Keeping them separate lets each change independently |
+
+### Learned while building M1a
+| Concept | In one line | Why it matters / gotcha |
+|---|---|---|
+| Spring Data repositories | `interface AccountRepository extends JpaRepository<Account, Long>`; Spring writes the implementation at startup | You get `save`, `findById`, `findAll`… for free. It must be an **interface**; `@Repository` is optional |
+| Relations vs raw ids | `@ManyToOne Account account` + `@JoinColumn(name = "account_id")`, not `Long accountId` | Type safety: with three `Long` parameters in a row, a swap compiles and money goes to the wrong account; with real types it doesn't compile. With `LAZY`, `getAccount().getId()` doesn't run a query |
+| camelCase ↔ snake_case | Spring Boot maps `transactionType` to the `transaction_type` column automatically | `@Column(name = …)` is only needed when the names really differ |
+| NULL passes CHECK | `CHECK (amount != 0)` with NULL is "unknown", which counts as a pass | Always pair a CHECK with `NOT NULL` |
+| Transactional DDL | Postgres runs each migration inside a transaction | A failing migration rolls back completely: fix the file and rerun. MySQL and Oracle can't do this |
+| Hibernate `@Check` | Only used when **Hibernate** generates the tables | With Flyway it does nothing. Constraints belong in the SQL migration |
+| `ddl-auto=validate` | At startup, Hibernate compares entities with the real tables and refuses to start on any mismatch | Catches Java/SQL drift immediately (e.g. `missing column [type]`) |
+| The never-edit-migrations rule | It protects **shared** history: teammates, CI, production. Flyway checksums include comments | Unshared local work: reset with `docker compose down -v` (deletes all local data!) and edit. Shared: add a new migration, e.g. `ALTER TABLE … RENAME COLUMN …` |
+| Connection refused vs rejected | "Refused" = nothing is listening on the port (the DB isn't running); "FATAL: …" = the DB answered and said no | Different symptom, different cause: check the container first vs check the config |
 
 **Questions I should be able to answer:**
 1. Why `EnumType.STRING` and not `ORDINAL`?
 2. Why is there no `balance` column on `accounts`?
 3. What should happen if someone tries to `UPDATE` or `DELETE` a ledger entry?
+
+## Habits
+Small working habits that keep preventing the bugs in BUGLOG.md.
+
+| Habit | Prevents |
+|---|---|
+| Rename on **both sides** (Java and SQL) in the same step | `validate` failures (BUGLOG #9) |
+| Follow a type change everywhere: fields, constructor, getters, callers | Compile errors (#7) |
+| Save before building | Building the old file (#4) |
+| Read the **last** `Caused by:` first | Chasing consequences instead of the cause (#1, #8) |
+| Check that something happened, not only that nothing crashed (`flyway_schema_history`, `psql`) | Silent failures (#3) |
+| Never edit an applied migration once it's shared, not even a comment | Checksum mismatches (#5) |
+| Always pair `CHECK` with `NOT NULL` | NULLs slipping past constraints (#6) |
+| Start Docker Desktop (and `docker compose up -d`) before running the app | Connection refused (#8) |
+| Edit the existing block, don't paste a second copy | Duplicate config (#2) |
 
 ## ✍️ Found myself
 | Concept | In one line | Why it matters / gotcha |
