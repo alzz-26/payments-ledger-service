@@ -135,3 +135,4 @@ Small working habits that keep preventing the bugs in BUGLOG.md.
 | Concept | In one line | Why it matters / gotcha |
 |---|---|---|
 | SYSTEM account is invariant | Negative is expected on the system side; the invariant is that the whole ledger sums to zero | Real systems have the same thing under names like settlement, clearing or suspense accounts. Their balances are expected to be negative or positive by design |
+| super() | All statements below super() only | cannot reference this before supertype constructor has been called, statements before super() is a preview feature and is disabled by default. |
