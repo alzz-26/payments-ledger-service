@@ -38,8 +38,7 @@ public class LedgerService {
 
     // Loads an account by id and returns it with its current balance
     public AccountResponse getAccount(Long accountId) {
-        // TODO(M1c): orElseThrow() currently gives a 500; return a 404 instead
-        Account account = accountRepo.findById(accountId).orElseThrow();
+        Account account = accountRepo.findById(accountId).orElseThrow(() -> new AccountMissingException(accountId));
         long balance = getBalance(accountId);
         return new AccountResponse(account.getId(), account.getOwner(), account.getCurrency(), account.getType(), balance);
     }
@@ -49,10 +48,9 @@ public class LedgerService {
     // All three rows are saved in one database transaction.
     @Transactional
     public DepositResponse deposit(Long accountId, long amount) {
-        // TODO(M1c): reject amount <= 0
         // Load the user account and the SYSTEM account for its currency
-        Account userAccount = accountRepo.findById(accountId).orElseThrow();
-        Account systemAccount = accountRepo.findByTypeAndCurrency(AccountType.SYSTEM, userAccount.getCurrency()).orElseThrow();
+        Account userAccount = accountRepo.findById(accountId).orElseThrow(() -> new AccountMissingException(accountId));
+        Account systemAccount = accountRepo.findByTypeAndCurrency(AccountType.SYSTEM, userAccount.getCurrency()).orElseThrow(() -> new SystemAccountMissingException(userAccount.getCurrency()));
 
         // Save the transaction header
         LedgerTransaction newTransaction = new LedgerTransaction(TransactionType.DEPOSIT);
