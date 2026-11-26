@@ -22,14 +22,14 @@ public class LedgerEntry {
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "transaction_id", nullable = false)
-    private LedgerTransaction transactionId;
+    private LedgerTransaction transaction;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "account_id", nullable = false)
-    private Account accountId;
+    private Account account;
 
     @Column(nullable = false)
-    private Long amount;
+    private long amount;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
@@ -38,16 +38,16 @@ public class LedgerEntry {
         //For JPA only
     }
 
-    public LedgerEntry(LedgerTransaction transaction_id, Account account_id, Long amount) {
-        this.transactionId = transaction_id;
-        this.accountId = account_id;
+    public LedgerEntry(LedgerTransaction transaction, Account account, long amount) {
+        this.transaction = transaction;
+        this.account = account;
         this.amount = amount;
         this.createdAt = Instant.now();
     }
 
     public Long getId() { return this.id; }
-    public LedgerTransaction getTransactionId() { return this.transactionId; }
-    public Account getAccountId() { return this.accountId; }
-    public Long getAmount() { return this.amount; }
+    public LedgerTransaction getTransaction() { return this.transaction; }
+    public Account getAccount() { return this.account; }
+    public long getAmount() { return this.amount; }
     public Instant getCreatedAt() { return this.createdAt; }
 }
