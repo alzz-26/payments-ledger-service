@@ -53,13 +53,86 @@ What I learned while building this project, one milestone at a time. Rows marked
 | `Instant` ↔ `TIMESTAMPTZ` | A UTC point in time in both Java and Postgres | Follows from the UTC decision |
 | DB constraints | `UNIQUE(owner, currency)`, foreign keys, `CHECK (amount <> 0)`, `NOT NULL` | The database is the last line of defence; constraints catch bugs that application code misses |
 | Index | Speeds up lookups such as `WHERE account_id = ?` | Balances are queried per account all the time |
+| Package by feature | Everything for one feature (`ledger/`) lives in one package, not split into `entities/`, `repositories/`… | One place to understand a feature; add subfolders only past ~10–15 files |
+| Domain concept vs role | **Concept** = a real-world business thing that exists without software (`Account`, `LedgerEntry`, `Transfer`), named after the thing. **Role** = a job a class does in the software for a concept, named thing + job suffix (`AccountRepository` stores it, `AccountController` handles HTTP, `LedgerService` holds the business logic, `DepositRequest` / `AccountResponse` are the API input and output shapes) | No `AccountEntity`: don't name the core concept after its storage mechanism. Test: would an accountant use the word? Analogy: a hospital *patient* (concept) vs *receptionist, nurse, billing clerk* (roles) |
+| Entity ≠ API response | `Account` mirrors the DB table; `AccountResponse` is the contract with API clients | Returning entities directly means a DB change breaks the API and can leak internal fields. Keeping them separate lets each change independently |
+
+### Learned while building M1a
+| Concept | In one line | Why it matters / gotcha |
+|---|---|---|
+| Spring Data repositories | `interface AccountRepository extends JpaRepository<Account, Long>`; Spring writes the implementation at startup | You get `save`, `findById`, `findAll`… for free. It must be an **interface**; `@Repository` is optional |
+| Relations vs raw ids | `@ManyToOne Account account` + `@JoinColumn(name = "account_id")`, not `Long accountId` | Type safety: with three `Long` parameters in a row, a swap compiles and money goes to the wrong account; with real types it doesn't compile. With `LAZY`, `getAccount().getId()` doesn't run a query |
+| camelCase ↔ snake_case | Spring Boot maps `transactionType` to the `transaction_type` column automatically | `@Column(name = …)` is only needed when the names really differ |
+| NULL passes CHECK | `CHECK (amount != 0)` with NULL is "unknown", which counts as a pass | Always pair a CHECK with `NOT NULL` |
+| Transactional DDL | Postgres runs each migration inside a transaction | A failing migration rolls back completely: fix the file and rerun. MySQL and Oracle can't do this |
+| Hibernate `@Check` | Only used when **Hibernate** generates the tables | With Flyway it does nothing. Constraints belong in the SQL migration |
+| `ddl-auto=validate` | At startup, Hibernate compares entities with the real tables and refuses to start on any mismatch | Catches Java/SQL drift immediately (e.g. `missing column [type]`) |
+| The never-edit-migrations rule | It protects **shared** history: teammates, CI, production. Flyway checksums include comments | Unshared local work: reset with `docker compose down -v` (deletes all local data!) and edit. Shared: add a new migration, e.g. `ALTER TABLE … RENAME COLUMN …` |
+| Connection refused vs rejected | "Refused" = nothing is listening on the port (the DB isn't running); "FATAL: …" = the DB answered and said no | Different symptom, different cause: check the container first vs check the config |
 
 **Questions I should be able to answer:**
 1. Why `EnumType.STRING` and not `ORDINAL`?
 2. Why is there no `balance` column on `accounts`?
 3. What should happen if someone tries to `UPDATE` or `DELETE` a ledger entry?
 
+## M1b: Deposits and the derived balance
+
+### Records and DTOs
+| Concept | In one line | Why it matters / gotcha |
+|---|---|---|
+| `record` keyword | Declares an immutable data carrier (Java 16+), like `class` / `enum` / `interface` declare their kinds of type | `public record DepositRequest(long amount) {}` generates the `private final` field, the constructor, the accessor `amount()` (no `get`), `equals`, `hashCode` and `toString` |
+| Records as DTOs | Requests and responses are records; they only carry data between HTTP and the service and **never touch SQL** | Jackson maps JSON keys to component names (`{"amount":…}` → `amount`), so the names must match. One public record per file |
+| Record vs entity | Record = API shape (Jackson, immutable). Entity = DB shape (Hibernate, mutable, no-arg constructor) | That's why records can't be entities. The service converts between them |
+| Record methods | records use x(). entities/normal classes use getX() | records are used for transfer of data, so do not get confused and write getX() |
+
+### Spring Data repositories: interface vs your own class
+| | `interface … extends JpaRepository<Account, Long>` ✅ | Your own `class AccountRepository` |
+|---|---|---|
+| Who writes the code | **Spring generates** the implementation at startup (a proxy) | You write every method with `EntityManager` or JDBC |
+| What you get | `save`, `findById`, `findAll`, `delete`, `count`… plus queries derived from method names | Only what you write yourself |
+| Custom queries | Method name (`findByTypeAndCurrency`) or `@Query("JPQL…")` | Hand-written SQL strings |
+| Gotcha | It must be an **interface**; an empty `class` compiles but does nothing | Lots of boilerplate, easy to get wrong |
+
+| Concept | In one line | Why it matters / gotcha |
+|---|---|---|
+| Derived queries | Spring builds the query from the method name: `findByTypeAndCurrency(type, currency)` → `where type = ? and currency = ?` | Returns `Optional<…>` for "zero or one" results |
+| JPQL `@Query` | Queries **entities and fields** (`e.account.id`), not tables and columns | `SUM` over zero rows is **NULL**, so wrap it in `coalesce(…, 0)` |
+
+### Service layer
+| Concept | In one line | Why it matters / gotcha |
+|---|---|---|
+| `@Transactional` | Wraps a service method in one DB transaction: all writes commit together or none do | A deposit writes 3 rows; without it a crash halfway leaves a ledger that doesn't sum to zero. Rolls back on unchecked exceptions by default. ⚠️ Calling it from **inside the same class** skips the proxy, so there's no transaction |
+| Constructor injection | Dependencies come in through the constructor into `private final` fields | Explicit, immutable, and easy to test with fakes. No field `@Autowired` |
+| Thin controller | Each method: take the request → call **one** service method → wrap the result | Business rules (anything about money) live in the service |
+
+### HTTP methods
+| Method | Meaning | Idempotent? | In this project |
+|---|---|---|---|
+| `GET` | Read; changes nothing | ✅ | `GET /api/accounts/{id}` |
+| `POST` | Create something new or trigger an action; the server picks the id | ❌ two calls = two deposits | Create an account, make a deposit |
+| `PUT` | **Replace** the whole resource at a URL the client already knows | ✅ same call twice = same result | Not needed: accounts and ledger entries are never replaced |
+| `PATCH` | Change part of a resource | Usually not | Not needed |
+| `DELETE` | Remove | ✅ | Never for ledger data: corrections are new entries |
+
+Idempotent means repeating the request has the same effect as sending it once. POST isn't, which is why M4 adds an `Idempotency-Key` header to make retried deposits and transfers safe.
+
+## Habits
+Small working habits that keep preventing the bugs in BUGLOG.md.
+
+| Habit | Prevents |
+|---|---|
+| Rename on **both sides** (Java and SQL) in the same step | `validate` failures (BUGLOG #9) |
+| Follow a type change everywhere: fields, constructor, getters, callers | Compile errors (#7) |
+| Save before building | Building the old file (#4) |
+| Read the **last** `Caused by:` first | Chasing consequences instead of the cause (#1, #8) |
+| Check that something happened, not only that nothing crashed (`flyway_schema_history`, `psql`) | Silent failures (#3) |
+| Never edit an applied migration once it's shared, not even a comment | Checksum mismatches (#5) |
+| Always pair `CHECK` with `NOT NULL` | NULLs slipping past constraints (#6) |
+| Start Docker Desktop (and `docker compose up -d`) before running the app | Connection refused (#8) |
+| Edit the existing block, don't paste a second copy | Duplicate config (#2) |
+
 ## ✍️ Found myself
 | Concept | In one line | Why it matters / gotcha |
 |---|---|---|
-| | | |
+| SYSTEM account is invariant | Negative is expected on the system side; the invariant is that the whole ledger sums to zero | Real systems have the same thing under names like settlement, clearing or suspense accounts. Their balances are expected to be negative or positive by design |
+| super() | All statements below super() only | cannot reference this before supertype constructor has been called, statements before super() is a preview feature and is disabled by default. |
