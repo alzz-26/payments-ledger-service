@@ -75,6 +75,47 @@ What I learned while building this project, one milestone at a time. Rows marked
 2. Why is there no `balance` column on `accounts`?
 3. What should happen if someone tries to `UPDATE` or `DELETE` a ledger entry?
 
+## M1b: Deposits and the derived balance
+
+### Records and DTOs
+| Concept | In one line | Why it matters / gotcha |
+|---|---|---|
+| `record` keyword | Declares an immutable data carrier (Java 16+), like `class` / `enum` / `interface` declare their kinds of type | `public record DepositRequest(long amount) {}` generates the `private final` field, the constructor, the accessor `amount()` (no `get`), `equals`, `hashCode` and `toString` |
+| Records as DTOs | Requests and responses are records; they only carry data between HTTP and the service and **never touch SQL** | Jackson maps JSON keys to component names (`{"amount":…}` → `amount`), so the names must match. One public record per file |
+| Record vs entity | Record = API shape (Jackson, immutable). Entity = DB shape (Hibernate, mutable, no-arg constructor) | That's why records can't be entities. The service converts between them |
+| Record methods | records use x(). entities/normal classes use getX() | records are used for transfer of data, so do not get confused and write getX() |
+
+### Spring Data repositories: interface vs your own class
+| | `interface … extends JpaRepository<Account, Long>` ✅ | Your own `class AccountRepository` |
+|---|---|---|
+| Who writes the code | **Spring generates** the implementation at startup (a proxy) | You write every method with `EntityManager` or JDBC |
+| What you get | `save`, `findById`, `findAll`, `delete`, `count`… plus queries derived from method names | Only what you write yourself |
+| Custom queries | Method name (`findByTypeAndCurrency`) or `@Query("JPQL…")` | Hand-written SQL strings |
+| Gotcha | It must be an **interface**; an empty `class` compiles but does nothing | Lots of boilerplate, easy to get wrong |
+
+| Concept | In one line | Why it matters / gotcha |
+|---|---|---|
+| Derived queries | Spring builds the query from the method name: `findByTypeAndCurrency(type, currency)` → `where type = ? and currency = ?` | Returns `Optional<…>` for "zero or one" results |
+| JPQL `@Query` | Queries **entities and fields** (`e.account.id`), not tables and columns | `SUM` over zero rows is **NULL**, so wrap it in `coalesce(…, 0)` |
+
+### Service layer
+| Concept | In one line | Why it matters / gotcha |
+|---|---|---|
+| `@Transactional` | Wraps a service method in one DB transaction: all writes commit together or none do | A deposit writes 3 rows; without it a crash halfway leaves a ledger that doesn't sum to zero. Rolls back on unchecked exceptions by default. ⚠️ Calling it from **inside the same class** skips the proxy, so there's no transaction |
+| Constructor injection | Dependencies come in through the constructor into `private final` fields | Explicit, immutable, and easy to test with fakes. No field `@Autowired` |
+| Thin controller | Each method: take the request → call **one** service method → wrap the result | Business rules (anything about money) live in the service |
+
+### HTTP methods
+| Method | Meaning | Idempotent? | In this project |
+|---|---|---|---|
+| `GET` | Read; changes nothing | ✅ | `GET /api/accounts/{id}` |
+| `POST` | Create something new or trigger an action; the server picks the id | ❌ two calls = two deposits | Create an account, make a deposit |
+| `PUT` | **Replace** the whole resource at a URL the client already knows | ✅ same call twice = same result | Not needed: accounts and ledger entries are never replaced |
+| `PATCH` | Change part of a resource | Usually not | Not needed |
+| `DELETE` | Remove | ✅ | Never for ledger data: corrections are new entries |
+
+Idempotent means repeating the request has the same effect as sending it once. POST isn't, which is why M4 adds an `Idempotency-Key` header to make retried deposits and transfers safe.
+
 ## Habits
 Small working habits that keep preventing the bugs in BUGLOG.md.
 
@@ -93,4 +134,4 @@ Small working habits that keep preventing the bugs in BUGLOG.md.
 ## ✍️ Found myself
 | Concept | In one line | Why it matters / gotcha |
 |---|---|---|
-| | | |
+| SYSTEM account is invariant | Negative is expected on the system side; the invariant is that the whole ledger sums to zero | Real systems have the same thing under names like settlement, clearing or suspense accounts. Their balances are expected to be negative or positive by design |
